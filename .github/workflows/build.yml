@@ -32,8 +32,8 @@ jobs:
                   applicationId = "com.example.pvztouch2"
                   minSdk = 24
                   targetSdk = 34
-                  versionCode = 6
-                  versionName = "1.5"
+                  versionCode = 7
+                  versionName = "1.6"
               }
               signingConfigs {
                   create("fixed") {
@@ -166,26 +166,34 @@ jobs:
             window.__touchToMouse = true;
 
             const HOVER_DELAY = 40;     // jeda tambahan selepas gerak, sebelum tekan
-            const TAP_GAP = 30;         // jeda tekan -> lepas untuk ketik
-            const DROP_GAP = 80;        // jeda sebelum lepas selepas seret (letak pokok)
-            const MOVE_THRESHOLD = 10;  // piksel sebelum dikira skrol
+            const TAP_GAP = 30;         // jeda tekan -> lepas
+            const DROP_GAP = 80;        // jeda sebelum klik kedua (mod Letak)
+            const MOVE_THRESHOLD = 10;  // piksel sebelum dikira seret/skrol
+            const WHEEL_GAIN = 1.5;     // kelajuan skrol roda
+
+            // Mod: normal = seret biasa, scroll = seret jadi roda mouse, place = seret = klik asal + klik tempat lepas
+            const MODES = ['normal', 'scroll', 'place'];
+            let mode = 'normal';
+            try { const m = localStorage.getItem('pvz_touch_mode'); if (MODES.indexOf(m) >= 0) mode = m; } catch (e) {}
+
             let down = false, lastTarget = null, twoFingerStart = 0;
-            let startPt = null, lastPt = null, scroller = null, scrolling = false;
+            let startPt = null, lastPt = null, scroller = null, scrolling = false, moved = false;
             let queue = Promise.resolve();
             const sleep = ms => new Promise(r => setTimeout(r, ms));
-            // tunggu 1 frame sebenar game (dengan had masa), supaya game sempat kemas kini petak hover
+            const run = fn => { queue = queue.then(fn).catch(() => {}); };
+            const pt = t => ({ clientX: t.clientX, clientY: t.clientY, screenX: t.screenX, screenY: t.screenY });
+
+            // tunggu frame sebenar game (dengan had masa) supaya game sempat kemas kini petak hover
             const frame = () => new Promise(r => {
               let done = false; const f = () => { if (!done) { done = true; r(); } };
               requestAnimationFrame(f); setTimeout(f, 120);
             });
             async function settle(ms) { await frame(); await frame(); await sleep(ms); }
-            const run = fn => { queue = queue.then(fn).catch(() => {}); };
-            const pt = t => ({ clientX: t.clientX, clientY: t.clientY, screenX: t.screenX, screenY: t.screenY });
 
             function target(t) {
               return document.elementFromPoint(t.clientX, t.clientY) || document.querySelector('canvas') || document.body;
             }
-            // cari elemen DOM yang boleh diskrol (bukan canvas)
+            // elemen DOM yang boleh diskrol (bukan canvas)
             function findScroller(el) {
               while (el && el.nodeType === 1 && el !== document.documentElement && el !== document.body) {
                 if (el.tagName === 'CANVAS') return null;
@@ -197,7 +205,8 @@ jobs:
               }
               return null;
             }
-            let prevX = null, prevY = null;   // untuk movementX/Y (mouse sebenar sentiasa ada)
+
+            let prevX = null, prevY = null;   // movementX/Y (mouse sebenar sentiasa ada)
             function fire(type, t, button, buttons) {
               const el = (type === 'mouseup' || type === 'mousemove') && down && lastTarget ? lastTarget : target(t);
               const mx = (type === 'mousemove' && prevX !== null) ? t.clientX - prevX : 0;
@@ -211,6 +220,26 @@ jobs:
               }));
               return el;
             }
+            function wheel(t, dx, dy) {
+              target(t).dispatchEvent(new WheelEvent('wheel', {
+                bubbles: true, cancelable: true, view: window,
+                clientX: t.clientX, clientY: t.clientY,
+                deltaX: -dx * WHEEL_GAIN, deltaY: -dy * WHEEL_GAIN, deltaMode: 0
+              }));
+            }
+            async function press(t) {
+              lastTarget = fire('mousedown', t, 0, 1);
+              down = true;
+              await settle(TAP_GAP);
+              fire('mouseup', t, 0, 0);
+              fire('click', t, 0, 0);
+              down = false; lastTarget = null;
+            }
+            async function clickAt(t) {
+              fire('mousemove', t, 0, 0);
+              await settle(HOVER_DELAY);
+              await press(t);
+            }
             function block(e) { e.preventDefault(); e.stopImmediatePropagation(); }
 
             window.addEventListener('touchstart', function (e) {
@@ -218,41 +247,52 @@ jobs:
               if (e.touches.length === 2) { twoFingerStart = Date.now(); return; }  // 2 jari = klik kanan
               const t = pt(e.touches[0]);
               startPt = lastPt = { x: t.clientX, y: t.clientY };
-              scrolling = false;
+              scrolling = false; moved = false;
               scroller = findScroller(target(t));
-              run(async () => {
-                fire('mousemove', t, 0, 0);
-                await settle(HOVER_DELAY);
-                lastTarget = fire('mousedown', t, 0, 1);
-                down = true;
-              });
+              if (mode === 'normal') {
+                run(async () => {
+                  fire('mousemove', t, 0, 0);
+                  await settle(HOVER_DELAY);
+                  lastTarget = fire('mousedown', t, 0, 1);
+                  down = true;
+                });
+              } else if (mode === 'scroll') {
+                run(async () => { fire('mousemove', t, 0, 0); });
+              } else {                                   // place: klik di tempat mula (pilih pokok)
+                run(async () => { await clickAt(t); });
+              }
             }, { capture: true, passive: false });
 
             window.addEventListener('touchmove', function (e) {
               block(e);
               if (e.touches.length > 1) return;
               const raw = e.touches[0];
-              if (scroller) {
-                const dx = raw.clientX - lastPt.x, dy = raw.clientY - lastPt.y;
-                lastPt = { x: raw.clientX, y: raw.clientY };
-                if (!scrolling && Math.hypot(raw.clientX - startPt.x, raw.clientY - startPt.y) > MOVE_THRESHOLD) scrolling = true;
-                if (scrolling) {
-                  scroller.scrollTop -= dy;
-                  scroller.scrollLeft -= dx;
-                  return;
-                }
+              const dx = raw.clientX - lastPt.x, dy = raw.clientY - lastPt.y;
+              lastPt = { x: raw.clientX, y: raw.clientY };
+              if (!moved && Math.hypot(raw.clientX - startPt.x, raw.clientY - startPt.y) > MOVE_THRESHOLD) moved = true;
+
+              if (scroller && moved) {                   // senarai HTML biasa
+                scrolling = true;
+                scroller.scrollTop -= dy;
+                scroller.scrollLeft -= dx;
+                return;
               }
               const t = pt(raw);
-              run(async () => { fire('mousemove', t, 0, down ? 1 : 0); });
+              if (mode === 'normal') {
+                run(async () => { fire('mousemove', t, 0, down ? 1 : 0); });
+              } else if (mode === 'scroll') {
+                if (moved) run(async () => { wheel(t, dx, dy); });
+              } else {
+                run(async () => { fire('mousemove', t, 0, 0); });   // hover: pokok ikut jari
+              }
             }, { capture: true, passive: false });
 
             window.addEventListener('touchend', function (e) {
               block(e);
               const t = pt(e.changedTouches[0]);
               const isRight = twoFingerStart && Date.now() - twoFingerStart < 300 && e.touches.length === 0;
-              const wasScrolling = scrolling;
-              const dragged = startPt && Math.hypot(t.clientX - startPt.x, t.clientY - startPt.y) > MOVE_THRESHOLD;
-              twoFingerStart = 0; scrolling = false; scroller = null;
+              const wasScrolling = scrolling, wasMoved = moved;
+              twoFingerStart = 0; scrolling = false; scroller = null; moved = false;
               run(async () => {
                 if (isRight) {
                   if (down) { fire('mouseup', t, 0, 0); down = false; lastTarget = null; }
@@ -261,27 +301,64 @@ jobs:
                   fire('mousedown', t, 2, 2); fire('mouseup', t, 2, 0); fire('contextmenu', t, 2, 0);
                   return;
                 }
-                if (!down) return;
-                if (wasScrolling) {              // skrol: lepaskan tanpa klik
+                if (mode === 'normal') {
+                  if (!down) return;
+                  if (wasScrolling) { fire('mouseup', t, 0, 0); down = false; lastTarget = null; return; }
+                  fire('mousemove', t, 0, 1);
+                  await settle(wasMoved ? DROP_GAP : TAP_GAP);
                   fire('mouseup', t, 0, 0);
+                  fire('click', t, 0, 0);
                   down = false; lastTarget = null;
-                  return;
+                } else if (mode === 'scroll') {
+                  if (!wasMoved) await clickAt(t);       // ketik biasa = klik
+                } else {                                 // place: klik kedua di tempat lepas
+                  if (wasMoved && !wasScrolling) {
+                    fire('mousemove', t, 0, 0);
+                    await settle(DROP_GAP);
+                    await press(t);
+                  }
                 }
-                fire('mousemove', t, 0, 1);
-                await settle(dragged ? DROP_GAP : TAP_GAP);
-                fire('mouseup', t, 0, 0);
-                fire('click', t, 0, 0);
-                down = false; lastTarget = null;
               });
             }, { capture: true, passive: false });
 
             window.addEventListener('touchcancel', function (e) {
               const t = pt(e.changedTouches[0]);
-              scrolling = false; scroller = null;
+              scrolling = false; scroller = null; moved = false;
               run(async () => { if (down) { fire('mouseup', t, 0, 0); down = false; lastTarget = null; } });
             }, { capture: true, passive: false });
 
             window.addEventListener('contextmenu', function (e) { e.preventDefault(); }, true);
+
+            // ---- butang tukar mod (tepi kiri, tengah) ----
+            let btn = null;
+            const LOOK = {
+              normal: ['🖱️', 'rgba(0,0,0,.5)'],
+              scroll: ['↕️', 'rgba(30,110,255,.75)'],
+              place:  ['🌱', 'rgba(30,170,60,.75)']
+            };
+            function render() {
+              if (!btn) return;
+              btn.textContent = LOOK[mode][0];
+              btn.style.background = LOOK[mode][1];
+            }
+            function cycle() {
+              mode = MODES[(MODES.indexOf(mode) + 1) % MODES.length];
+              try { localStorage.setItem('pvz_touch_mode', mode); } catch (e) {}
+              render();
+            }
+            function ensureButton() {
+              if (btn && btn.isConnected) return;
+              if (!document.body) return;
+              btn = document.createElement('div');
+              btn.style.cssText = 'position:fixed;left:4px;top:50%;transform:translateY(-50%);z-index:2147483646;' +
+                'width:42px;height:42px;border-radius:50%;display:flex;align-items:center;justify-content:center;' +
+                'font:20px sans-serif;color:#fff;border:2px solid rgba(255,255,255,.6);user-select:none;';
+              btn.addEventListener('click', function (e) { e.stopPropagation(); cycle(); });
+              render();
+              document.body.appendChild(btn);
+            }
+            setInterval(ensureButton, 1000);
+            ensureButton();
           })();
           EOF_FILE
           mkdir -p app/src/main/java/com/example/pvztouch
