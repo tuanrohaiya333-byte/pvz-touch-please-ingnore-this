@@ -32,8 +32,8 @@ jobs:
                   applicationId = "com.example.pvztouch2"
                   minSdk = 24
                   targetSdk = 34
-                  versionCode = 4
-                  versionName = "1.3"
+                  versionCode = 5
+                  versionName = "1.4"
               }
               signingConfigs {
                   create("fixed") {
@@ -118,18 +118,67 @@ jobs:
           })();
           EOF_FILE
           mkdir -p app/src/main/assets
+          cat > app/src/main/assets/ping.js <<'EOF_FILE'
+          (function () {
+            if (window.__pingMeter) return;
+            window.__pingMeter = true;
+
+            let box = null;
+            function ensureBox() {
+              if (box && box.isConnected) return box;
+              if (!document.body) return null;
+              box = document.createElement('div');
+              box.style.cssText = 'position:fixed;top:2px;right:6px;z-index:2147483647;' +
+                'font:bold 11px monospace;padding:1px 5px;border-radius:4px;' +
+                'background:rgba(0,0,0,.45);color:#9f9;pointer-events:none;';
+              box.textContent = '-- ms';
+              document.body.appendChild(box);
+              return box;
+            }
+            function show(text, color) {
+              const b = ensureBox();
+              if (!b) return;
+              b.textContent = text;
+              b.style.color = color;
+            }
+            async function measure() {
+              const t0 = performance.now();
+              try {
+                const c = new AbortController();
+                const to = setTimeout(() => c.abort(), 5000);
+                await fetch(location.origin + '/?_=' + Date.now(), { method: 'HEAD', cache: 'no-store', signal: c.signal });
+                clearTimeout(to);
+                const ms = Math.round(performance.now() - t0);
+                const color = ms < 80 ? '#7f7' : ms < 200 ? '#fd4' : '#f66';
+                show(ms + ' ms', color);
+              } catch (e) {
+                show('offline', '#f66');
+              }
+            }
+            setInterval(measure, 2500);
+            setTimeout(measure, 1500);
+          })();
+          EOF_FILE
+          mkdir -p app/src/main/assets
           cat > app/src/main/assets/touch.js <<'EOF_FILE'
           (function () {
             if (window.__touchToMouse) return;
             window.__touchToMouse = true;
 
-            const HOVER_DELAY = 60;     // jeda selepas gerak, sebelum tekan
-            const CLICK_GAP = 40;       // jeda antara tekan dan lepas
+            const HOVER_DELAY = 40;     // jeda tambahan selepas gerak, sebelum tekan
+            const TAP_GAP = 30;         // jeda tekan -> lepas untuk ketik
+            const DROP_GAP = 80;        // jeda sebelum lepas selepas seret (letak pokok)
             const MOVE_THRESHOLD = 10;  // piksel sebelum dikira skrol
             let down = false, lastTarget = null, twoFingerStart = 0;
             let startPt = null, lastPt = null, scroller = null, scrolling = false;
             let queue = Promise.resolve();
             const sleep = ms => new Promise(r => setTimeout(r, ms));
+            // tunggu 1 frame sebenar game (dengan had masa), supaya game sempat kemas kini petak hover
+            const frame = () => new Promise(r => {
+              let done = false; const f = () => { if (!done) { done = true; r(); } };
+              requestAnimationFrame(f); setTimeout(f, 120);
+            });
+            async function settle(ms) { await frame(); await frame(); await sleep(ms); }
             const run = fn => { queue = queue.then(fn).catch(() => {}); };
             const pt = t => ({ clientX: t.clientX, clientY: t.clientY, screenX: t.screenX, screenY: t.screenY });
 
@@ -168,7 +217,7 @@ jobs:
               scroller = findScroller(target(t));
               run(async () => {
                 fire('mousemove', t, 0, 0);
-                await sleep(HOVER_DELAY);
+                await settle(HOVER_DELAY);
                 lastTarget = fire('mousedown', t, 0, 1);
                 down = true;
               });
@@ -197,12 +246,13 @@ jobs:
               const t = pt(e.changedTouches[0]);
               const isRight = twoFingerStart && Date.now() - twoFingerStart < 300 && e.touches.length === 0;
               const wasScrolling = scrolling;
+              const dragged = startPt && Math.hypot(t.clientX - startPt.x, t.clientY - startPt.y) > MOVE_THRESHOLD;
               twoFingerStart = 0; scrolling = false; scroller = null;
               run(async () => {
                 if (isRight) {
                   if (down) { fire('mouseup', t, 0, 0); down = false; lastTarget = null; }
                   fire('mousemove', t, 2, 0);
-                  await sleep(HOVER_DELAY);
+                  await settle(HOVER_DELAY);
                   fire('mousedown', t, 2, 2); fire('mouseup', t, 2, 0); fire('contextmenu', t, 2, 0);
                   return;
                 }
@@ -213,7 +263,7 @@ jobs:
                   return;
                 }
                 fire('mousemove', t, 0, 1);
-                await sleep(CLICK_GAP);
+                await settle(dragged ? DROP_GAP : TAP_GAP);
                 fire('mouseup', t, 0, 0);
                 fire('click', t, 0, 0);
                 down = false; lastTarget = null;
@@ -321,7 +371,7 @@ jobs:
                       }
                   }
 
-                  injectJs = listOf("bridge.js", "touch.js").joinToString("\n") { n ->
+                  injectJs = listOf("bridge.js", "touch.js", "ping.js").joinToString("\n") { n ->
                       assets.open(n).bufferedReader().use { it.readText() }
                   }
 
