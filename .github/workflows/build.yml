@@ -74,7 +74,13 @@ jobs:
             if (window.__touchToMouse) return;
             window.__touchToMouse = true;
 
+            const HOVER_DELAY = 60;  // jeda selepas gerak, sebelum tekan
+            const CLICK_GAP = 40;    // jeda antara tekan dan lepas
             let down = false, lastTarget = null, twoFingerStart = 0;
+            let queue = Promise.resolve();
+            const sleep = ms => new Promise(r => setTimeout(r, ms));
+            const run = fn => { queue = queue.then(fn).catch(() => {}); };
+            const pt = t => ({ clientX: t.clientX, clientY: t.clientY, screenX: t.screenX, screenY: t.screenY });
 
             function target(t) {
               return document.elementFromPoint(t.clientX, t.clientY) || document.querySelector('canvas') || document.body;
@@ -93,35 +99,47 @@ jobs:
             window.addEventListener('touchstart', function (e) {
               block(e);
               if (e.touches.length === 2) { twoFingerStart = Date.now(); return; }  // 2 jari = klik kanan
-              const t = e.touches[0];
-              fire('mousemove', t, 0, 0);
-              lastTarget = fire('mousedown', t, 0, 1);
-              down = true;
+              const t = pt(e.touches[0]);
+              run(async () => {
+                fire('mousemove', t, 0, 0);
+                await sleep(HOVER_DELAY);
+                lastTarget = fire('mousedown', t, 0, 1);
+                down = true;
+              });
             }, { capture: true, passive: false });
 
             window.addEventListener('touchmove', function (e) {
               block(e);
               if (e.touches.length > 1) return;
-              fire('mousemove', e.touches[0], 0, down ? 1 : 0);
+              const t = pt(e.touches[0]);
+              run(async () => { fire('mousemove', t, 0, down ? 1 : 0); });
             }, { capture: true, passive: false });
 
             window.addEventListener('touchend', function (e) {
               block(e);
-              const t = e.changedTouches[0];
-              if (twoFingerStart && Date.now() - twoFingerStart < 300 && e.touches.length === 0) {
-                if (down) { fire('mouseup', t, 0, 0); down = false; lastTarget = null; }
-                fire('mousedown', t, 2, 2); fire('mouseup', t, 2, 0); fire('contextmenu', t, 2, 0);
-                twoFingerStart = 0; return;
-              }
+              const t = pt(e.changedTouches[0]);
+              const isRight = twoFingerStart && Date.now() - twoFingerStart < 300 && e.touches.length === 0;
               twoFingerStart = 0;
-              if (!down) return;
-              fire('mouseup', t, 0, 0);
-              fire('click', t, 0, 0);
-              down = false; lastTarget = null;
+              run(async () => {
+                if (isRight) {
+                  if (down) { fire('mouseup', t, 0, 0); down = false; lastTarget = null; }
+                  fire('mousemove', t, 2, 0);
+                  await sleep(HOVER_DELAY);
+                  fire('mousedown', t, 2, 2); fire('mouseup', t, 2, 0); fire('contextmenu', t, 2, 0);
+                  return;
+                }
+                if (!down) return;
+                fire('mousemove', t, 0, 1);      // pastikan kedudukan akhir dikemas kini
+                await sleep(CLICK_GAP);
+                fire('mouseup', t, 0, 0);
+                fire('click', t, 0, 0);
+                down = false; lastTarget = null;
+              });
             }, { capture: true, passive: false });
 
             window.addEventListener('touchcancel', function (e) {
-              if (down) { fire('mouseup', e.changedTouches[0], 0, 0); down = false; lastTarget = null; }
+              const t = pt(e.changedTouches[0]);
+              run(async () => { if (down) { fire('mouseup', t, 0, 0); down = false; lastTarget = null; } });
             }, { capture: true, passive: false });
 
             window.addEventListener('contextmenu', function (e) { e.preventDefault(); }, true);
