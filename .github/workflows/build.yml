@@ -29,13 +29,24 @@ jobs:
               namespace = "com.example.pvztouch"
               compileSdk = 34
               defaultConfig {
-                  applicationId = "com.example.pvztouch"
+                  applicationId = "com.example.pvztouch2"
                   minSdk = 24
                   targetSdk = 34
-                  versionCode = 1
-                  versionName = "1.0"
+                  versionCode = 3
+                  versionName = "1.2"
               }
-              buildTypes { release { isMinifyEnabled = false } }
+              signingConfigs {
+                  create("fixed") {
+                      storeFile = file("../fixed.keystore")
+                      storePassword = "android"
+                      keyAlias = "pvz"
+                      keyPassword = "android"
+                  }
+              }
+              buildTypes {
+                  debug { signingConfig = signingConfigs.getByName("fixed") }
+                  release { isMinifyEnabled = false; signingConfig = signingConfigs.getByName("fixed") }
+              }
               compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
               kotlinOptions { jvmTarget = "17" }
           }
@@ -67,6 +78,44 @@ jobs:
                   </activity>
               </application>
           </manifest>
+          EOF_FILE
+          mkdir -p app/src/main/assets
+          cat > app/src/main/assets/bridge.js <<'EOF_FILE'
+          (function () {
+            if (window.__saveBridge) return;
+            window.__saveBridge = true;
+
+            function send(a) {
+              const name = a.download || 'pvz-save.json';
+              fetch(a.href).then(r => r.blob()).then(b => {
+                const fr = new FileReader();
+                fr.onload = () => {
+                  const s = String(fr.result);
+                  window.AndroidBridge.save(name, b.type || '', s.slice(s.indexOf(',') + 1));
+                };
+                fr.readAsDataURL(b);
+              }).catch(() => {});
+            }
+            function handles(a) {
+              return a && a.tagName === 'A' && window.AndroidBridge &&
+                (a.hasAttribute('download') || /^(blob|data):/.test(a.href));
+            }
+
+            const origClick = HTMLAnchorElement.prototype.click;
+            HTMLAnchorElement.prototype.click = function () {
+              if (handles(this)) { send(this); return; }
+              return origClick.apply(this, arguments);
+            };
+            const origDispatch = HTMLAnchorElement.prototype.dispatchEvent;
+            HTMLAnchorElement.prototype.dispatchEvent = function (ev) {
+              if (ev && ev.type === 'click' && handles(this)) { send(this); return true; }
+              return origDispatch.apply(this, arguments);
+            };
+            document.addEventListener('click', function (e) {
+              const a = e.target && e.target.closest ? e.target.closest('a') : null;
+              if (handles(a)) { e.preventDefault(); e.stopImmediatePropagation(); send(a); }
+            }, true);
+          })();
           EOF_FILE
           mkdir -p app/src/main/assets
           cat > app/src/main/assets/touch.js <<'EOF_FILE'
@@ -150,29 +199,80 @@ jobs:
           package com.example.pvztouch
 
           import android.annotation.SuppressLint
+          import android.content.ContentValues
+          import android.content.Context
+          import android.content.Intent
           import android.graphics.Bitmap
           import android.graphics.Color
+          import android.net.Uri
+          import android.os.Build
           import android.os.Bundle
+          import android.os.Environment
+          import android.os.Handler
+          import android.os.Looper
+          import android.provider.MediaStore
+          import android.util.Base64
           import android.view.View
           import android.view.WindowManager
+          import android.webkit.JavascriptInterface
+          import android.webkit.ValueCallback
           import android.webkit.WebChromeClient
           import android.webkit.WebSettings
           import android.webkit.WebView
           import android.webkit.WebViewClient
+          import android.widget.Toast
           import androidx.activity.OnBackPressedCallback
+          import androidx.activity.result.contract.ActivityResultContracts
           import androidx.appcompat.app.AppCompatActivity
           import androidx.core.view.WindowCompat
           import androidx.core.view.WindowInsetsCompat
           import androidx.core.view.WindowInsetsControllerCompat
+          import java.io.File
 
           private const val GAME_URL = "https://play.pvzge.com/"
-          // UA desktop supaya game anggap ia PC
           private const val DESKTOP_UA =
               "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 
+          class Bridge(private val ctx: Context) {
+              private fun toast(msg: String) =
+                  Handler(Looper.getMainLooper()).post { Toast.makeText(ctx, msg, Toast.LENGTH_LONG).show() }
+
+              @JavascriptInterface
+              fun save(name: String, mime: String, b64: String) {
+                  try {
+                      val bytes = Base64.decode(b64, Base64.DEFAULT)
+                      val safe = name.ifBlank { "pvz-save.json" }.replace(Regex("[\\\\/:*?\"<>|]"), "_")
+                      if (Build.VERSION.SDK_INT >= 29) {
+                          val values = ContentValues().apply {
+                              put(MediaStore.Downloads.DISPLAY_NAME, safe)
+                              put(MediaStore.Downloads.MIME_TYPE, if (mime.isBlank()) "application/octet-stream" else mime)
+                              put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+                          }
+                          val uri = ctx.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                              ?: throw RuntimeException("insert gagal")
+                          ctx.contentResolver.openOutputStream(uri)?.use { it.write(bytes) }
+                          toast("Disimpan dalam folder Download: $safe")
+                      } else {
+                          val dir = ctx.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+                          File(dir, safe).writeBytes(bytes)
+                          toast("Disimpan: ${File(dir, safe).absolutePath}")
+                      }
+                  } catch (e: Exception) {
+                      toast("Gagal simpan: ${e.message}")
+                  }
+              }
+          }
+
           class MainActivity : AppCompatActivity() {
               private lateinit var web: WebView
-              private var touchJs: String = ""
+              private var injectJs: String = ""
+              private var filePathCallback: ValueCallback<Array<Uri>>? = null
+
+              private val chooser = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
+                  val result = WebChromeClient.FileChooserParams.parseResult(r.resultCode, r.data)
+                  filePathCallback?.onReceiveValue(result)
+                  filePathCallback = null
+              }
 
               @SuppressLint("SetJavaScriptEnabled")
               override fun onCreate(savedInstanceState: Bundle?) {
@@ -180,7 +280,9 @@ jobs:
                   window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
                   WindowCompat.setDecorFitsSystemWindows(window, false)
 
-                  touchJs = assets.open("touch.js").bufferedReader().use { it.readText() }
+                  injectJs = listOf("bridge.js", "touch.js").joinToString("\n") { n ->
+                      assets.open(n).bufferedReader().use { it.readText() }
+                  }
 
                   web = WebView(this).apply {
                       setBackgroundColor(Color.BLACK)
@@ -188,9 +290,10 @@ jobs:
                       overScrollMode = View.OVER_SCROLL_NEVER
                       isVerticalScrollBarEnabled = false
                       isHorizontalScrollBarEnabled = false
+                      addJavascriptInterface(Bridge(this@MainActivity), "AndroidBridge")
                       settings.apply {
                           javaScriptEnabled = true
-                          domStorageEnabled = true            // simpan progres game
+                          domStorageEnabled = true
                           databaseEnabled = true
                           cacheMode = WebSettings.LOAD_DEFAULT
                           mediaPlaybackRequiresUserGesture = false
@@ -201,13 +304,31 @@ jobs:
                           builtInZoomControls = false
                           mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
                       }
-                      webChromeClient = WebChromeClient()
+                      webChromeClient = object : WebChromeClient() {
+                          override fun onShowFileChooser(
+                              w: WebView, cb: ValueCallback<Array<Uri>>, p: FileChooserParams
+                          ): Boolean {
+                              filePathCallback?.onReceiveValue(null)
+                              filePathCallback = cb
+                              val intent = Intent(Intent.ACTION_GET_CONTENT).apply {
+                                  addCategory(Intent.CATEGORY_OPENABLE)
+                                  type = "*/*"
+                              }
+                              return try {
+                                  chooser.launch(Intent.createChooser(intent, "Pilih fail"))
+                                  true
+                              } catch (e: Exception) {
+                                  filePathCallback = null
+                                  false
+                              }
+                          }
+                      }
                       webViewClient = object : WebViewClient() {
                           override fun onPageStarted(v: WebView, url: String?, f: Bitmap?) {
-                              v.evaluateJavascript(touchJs, null)
+                              v.evaluateJavascript(injectJs, null)
                           }
                           override fun onPageFinished(v: WebView, url: String?) {
-                              v.evaluateJavascript(touchJs, null)
+                              v.evaluateJavascript(injectJs, null)
                           }
                       }
                   }
@@ -253,6 +374,9 @@ jobs:
               id("org.jetbrains.kotlin.android") version "1.9.24" apply false
           }
           EOF_FILE
+          cat > fixed.keystore.b64 <<'EOF_FILE'
+          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
+          EOF_FILE
           cat > gradle.properties <<'EOF_FILE'
           org.gradle.jvmargs=-Xmx2048m
           android.useAndroidX=true
@@ -263,6 +387,7 @@ jobs:
           rootProject.name = "PvZTouch"
           include(":app")
           EOF_FILE
+          base64 -d fixed.keystore.b64 > fixed.keystore
       - name: Build APK
         run: |
           cd $RUNNER_TEMP/proj
@@ -273,4 +398,3 @@ jobs:
         run: |
           cp $RUNNER_TEMP/proj/app/build/outputs/apk/debug/app-debug.apk ./PvZTouch.apk
           gh release create "build-${{ github.run_number }}" ./PvZTouch.apk --repo "$GITHUB_REPOSITORY" --title "PvZ Touch #${{ github.run_number }}" --notes "APK debug"
-          
