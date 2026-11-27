@@ -32,8 +32,8 @@ jobs:
                   applicationId = "com.example.pvztouch2"
                   minSdk = 24
                   targetSdk = 34
-                  versionCode = 7
-                  versionName = "1.6"
+                  versionCode = 8
+                  versionName = "1.7"
               }
               signingConfigs {
                   create("fixed") {
@@ -350,9 +350,9 @@ jobs:
               if (btn && btn.isConnected) return;
               if (!document.body) return;
               btn = document.createElement('div');
-              btn.style.cssText = 'position:fixed;left:4px;top:50%;transform:translateY(-50%);z-index:2147483646;' +
-                'width:42px;height:42px;border-radius:50%;display:flex;align-items:center;justify-content:center;' +
-                'font:20px sans-serif;color:#fff;border:2px solid rgba(255,255,255,.6);user-select:none;';
+              btn.style.cssText = 'position:fixed;left:3px;bottom:3px;z-index:2147483646;opacity:.55;' +
+                'width:26px;height:26px;border-radius:50%;display:flex;align-items:center;justify-content:center;' +
+                'font:13px sans-serif;color:#fff;border:1px solid rgba(255,255,255,.6);user-select:none;';
               btn.addEventListener('click', function (e) { e.stopPropagation(); cycle(); });
               render();
               document.body.appendChild(btn);
