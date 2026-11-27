@@ -1,0 +1,258 @@
+name: Build APK
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.7
+      - name: Jana projek
+        run: |
+          mkdir -p $RUNNER_TEMP/proj && cd $RUNNER_TEMP/proj
+          mkdir -p app
+          cat > app/build.gradle.kts <<'EOF_FILE'
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+          android {
+              namespace = "com.example.pvztouch"
+              compileSdk = 34
+              defaultConfig {
+                  applicationId = "com.example.pvztouch"
+                  minSdk = 24
+                  targetSdk = 34
+                  versionCode = 1
+                  versionName = "1.0"
+              }
+              buildTypes { release { isMinifyEnabled = false } }
+              compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
+              kotlinOptions { jvmTarget = "17" }
+          }
+          dependencies {
+              implementation("androidx.core:core-ktx:1.13.1")
+              implementation("androidx.appcompat:appcompat:1.7.0")
+          }
+          EOF_FILE
+          mkdir -p app/src/main
+          cat > app/src/main/AndroidManifest.xml <<'EOF_FILE'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.INTERNET" />
+              <application
+                  android:label="PvZ Touch"
+                  android:hardwareAccelerated="true"
+                  android:usesCleartextTraffic="false"
+                  android:theme="@style/Theme.Game">
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:screenOrientation="sensorLandscape"
+                      android:configChanges="orientation|screenSize|keyboardHidden|smallestScreenSize|screenLayout|density"
+                      android:launchMode="singleTask">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF_FILE
+          mkdir -p app/src/main/assets
+          cat > app/src/main/assets/touch.js <<'EOF_FILE'
+          (function () {
+            if (window.__touchToMouse) return;
+            window.__touchToMouse = true;
+
+            let down = false, lastTarget = null, twoFingerStart = 0;
+
+            function target(t) {
+              return document.elementFromPoint(t.clientX, t.clientY) || document.querySelector('canvas') || document.body;
+            }
+            function fire(type, t, button, buttons) {
+              const el = (type === 'mouseup' || type === 'mousemove') && down && lastTarget ? lastTarget : target(t);
+              el.dispatchEvent(new MouseEvent(type, {
+                bubbles: true, cancelable: true, view: window,
+                clientX: t.clientX, clientY: t.clientY, screenX: t.screenX, screenY: t.screenY,
+                button: button, buttons: buttons
+              }));
+              return el;
+            }
+            function block(e) { e.preventDefault(); e.stopImmediatePropagation(); }
+
+            window.addEventListener('touchstart', function (e) {
+              block(e);
+              if (e.touches.length === 2) { twoFingerStart = Date.now(); return; }  // 2 jari = klik kanan
+              const t = e.touches[0];
+              fire('mousemove', t, 0, 0);
+              lastTarget = fire('mousedown', t, 0, 1);
+              down = true;
+            }, { capture: true, passive: false });
+
+            window.addEventListener('touchmove', function (e) {
+              block(e);
+              if (e.touches.length > 1) return;
+              fire('mousemove', e.touches[0], 0, down ? 1 : 0);
+            }, { capture: true, passive: false });
+
+            window.addEventListener('touchend', function (e) {
+              block(e);
+              const t = e.changedTouches[0];
+              if (twoFingerStart && Date.now() - twoFingerStart < 300 && e.touches.length === 0) {
+                if (down) { fire('mouseup', t, 0, 0); down = false; lastTarget = null; }
+                fire('mousedown', t, 2, 2); fire('mouseup', t, 2, 0); fire('contextmenu', t, 2, 0);
+                twoFingerStart = 0; return;
+              }
+              twoFingerStart = 0;
+              if (!down) return;
+              fire('mouseup', t, 0, 0);
+              fire('click', t, 0, 0);
+              down = false; lastTarget = null;
+            }, { capture: true, passive: false });
+
+            window.addEventListener('touchcancel', function (e) {
+              if (down) { fire('mouseup', e.changedTouches[0], 0, 0); down = false; lastTarget = null; }
+            }, { capture: true, passive: false });
+
+            window.addEventListener('contextmenu', function (e) { e.preventDefault(); }, true);
+          })();
+          EOF_FILE
+          mkdir -p app/src/main/java/com/example/pvztouch
+          cat > app/src/main/java/com/example/pvztouch/MainActivity.kt <<'EOF_FILE'
+          package com.example.pvztouch
+
+          import android.annotation.SuppressLint
+          import android.graphics.Bitmap
+          import android.graphics.Color
+          import android.os.Bundle
+          import android.view.View
+          import android.view.WindowManager
+          import android.webkit.WebChromeClient
+          import android.webkit.WebSettings
+          import android.webkit.WebView
+          import android.webkit.WebViewClient
+          import androidx.activity.OnBackPressedCallback
+          import androidx.appcompat.app.AppCompatActivity
+          import androidx.core.view.WindowCompat
+          import androidx.core.view.WindowInsetsCompat
+          import androidx.core.view.WindowInsetsControllerCompat
+
+          private const val GAME_URL = "https://play.pvzge.com/"
+          // UA desktop supaya game anggap ia PC
+          private const val DESKTOP_UA =
+              "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+
+          class MainActivity : AppCompatActivity() {
+              private lateinit var web: WebView
+              private var touchJs: String = ""
+
+              @SuppressLint("SetJavaScriptEnabled")
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                  WindowCompat.setDecorFitsSystemWindows(window, false)
+
+                  touchJs = assets.open("touch.js").bufferedReader().use { it.readText() }
+
+                  web = WebView(this).apply {
+                      setBackgroundColor(Color.BLACK)
+                      setLayerType(View.LAYER_TYPE_HARDWARE, null)
+                      overScrollMode = View.OVER_SCROLL_NEVER
+                      isVerticalScrollBarEnabled = false
+                      isHorizontalScrollBarEnabled = false
+                      settings.apply {
+                          javaScriptEnabled = true
+                          domStorageEnabled = true            // simpan progres game
+                          databaseEnabled = true
+                          cacheMode = WebSettings.LOAD_DEFAULT
+                          mediaPlaybackRequiresUserGesture = false
+                          userAgentString = DESKTOP_UA
+                          useWideViewPort = true
+                          loadWithOverviewMode = true
+                          setSupportZoom(false)
+                          builtInZoomControls = false
+                          mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
+                      }
+                      webChromeClient = WebChromeClient()
+                      webViewClient = object : WebViewClient() {
+                          override fun onPageStarted(v: WebView, url: String?, f: Bitmap?) {
+                              v.evaluateJavascript(touchJs, null)
+                          }
+                          override fun onPageFinished(v: WebView, url: String?) {
+                              v.evaluateJavascript(touchJs, null)
+                          }
+                      }
+                  }
+                  setContentView(web)
+                  web.loadUrl(GAME_URL)
+
+                  onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+                      override fun handleOnBackPressed() {
+                          if (web.canGoBack()) web.goBack() else finish()
+                      }
+                  })
+              }
+
+              private fun immersive() {
+                  WindowInsetsControllerCompat(window, window.decorView).apply {
+                      systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                      hide(WindowInsetsCompat.Type.systemBars())
+                  }
+              }
+
+              override fun onWindowFocusChanged(hasFocus: Boolean) {
+                  super.onWindowFocusChanged(hasFocus)
+                  if (hasFocus) immersive()
+              }
+              override fun onResume() { super.onResume(); web.onResume(); immersive() }
+              override fun onPause() { web.onPause(); super.onPause() }
+              override fun onDestroy() { web.destroy(); super.onDestroy() }
+          }
+          EOF_FILE
+          mkdir -p app/src/main/res/values
+          cat > app/src/main/res/values/themes.xml <<'EOF_FILE'
+          <resources>
+              <style name="Theme.Game" parent="Theme.AppCompat.NoActionBar">
+                  <item name="android:windowBackground">@android:color/black</item>
+                  <item name="android:windowFullscreen">true</item>
+                  <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
+              </style>
+          </resources>
+          EOF_FILE
+          cat > build.gradle.kts <<'EOF_FILE'
+          plugins {
+              id("com.android.application") version "8.5.2" apply false
+              id("org.jetbrains.kotlin.android") version "1.9.24" apply false
+          }
+          EOF_FILE
+          cat > gradle.properties <<'EOF_FILE'
+          org.gradle.jvmargs=-Xmx2048m
+          android.useAndroidX=true
+          EOF_FILE
+          cat > settings.gradle.kts <<'EOF_FILE'
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement { repositories { google(); mavenCentral() } }
+          rootProject.name = "PvZTouch"
+          include(":app")
+          EOF_FILE
+      - name: Build APK
+        run: |
+          cd $RUNNER_TEMP/proj
+          gradle assembleDebug --no-daemon
+      - name: Terbitkan APK
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp $RUNNER_TEMP/proj/app/build/outputs/apk/debug/app-debug.apk ./PvZTouch.apk
+          gh release create "build-${{ github.run_number }}" ./PvZTouch.apk --repo "$GITHUB_REPOSITORY" --title "PvZ Touch #${{ github.run_number }}" --notes "APK debug"
+          
