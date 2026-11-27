@@ -32,8 +32,8 @@ jobs:
                   applicationId = "com.example.pvztouch2"
                   minSdk = 24
                   targetSdk = 34
-                  versionCode = 5
-                  versionName = "1.4"
+                  versionCode = 6
+                  versionName = "1.5"
               }
               signingConfigs {
                   create("fixed") {
@@ -197,11 +197,16 @@ jobs:
               }
               return null;
             }
+            let prevX = null, prevY = null;   // untuk movementX/Y (mouse sebenar sentiasa ada)
             function fire(type, t, button, buttons) {
               const el = (type === 'mouseup' || type === 'mousemove') && down && lastTarget ? lastTarget : target(t);
+              const mx = (type === 'mousemove' && prevX !== null) ? t.clientX - prevX : 0;
+              const my = (type === 'mousemove' && prevY !== null) ? t.clientY - prevY : 0;
+              prevX = t.clientX; prevY = t.clientY;
               el.dispatchEvent(new MouseEvent(type, {
                 bubbles: true, cancelable: true, view: window,
                 clientX: t.clientX, clientY: t.clientY, screenX: t.screenX, screenY: t.screenY,
+                movementX: mx, movementY: my,
                 button: button, buttons: buttons
               }));
               return el;
