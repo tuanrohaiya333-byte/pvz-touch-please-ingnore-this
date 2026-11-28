@@ -32,8 +32,8 @@ jobs:
                   applicationId = "com.example.pvztouch2"
                   minSdk = 24
                   targetSdk = 34
-                  versionCode = 8
-                  versionName = "1.7"
+                  versionCode = 10
+                  versionName = "1.9"
               }
               signingConfigs {
                   create("fixed") {
@@ -100,6 +100,19 @@ jobs:
               return a && a.tagName === 'A' && window.AndroidBridge &&
                 (a.hasAttribute('download') || /^(blob|data):/.test(a.href));
             }
+
+            // papan kekunci: tunjuk bila kotak teks difokus, sembunyi bila tidak
+            function editable(t) {
+              return t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable);
+            }
+            document.addEventListener('focusin', function (e) {
+              if (editable(e.target) && window.AndroidBridge && window.AndroidBridge.showKeyboard) window.AndroidBridge.showKeyboard();
+            }, true);
+            document.addEventListener('focusout', function () {
+              setTimeout(function () {
+                if (!editable(document.activeElement) && window.AndroidBridge && window.AndroidBridge.hideKeyboard) window.AndroidBridge.hideKeyboard();
+              }, 200);
+            }, true);
 
             const origClick = HTMLAnchorElement.prototype.click;
             HTMLAnchorElement.prototype.click = function () {
@@ -227,12 +240,18 @@ jobs:
                 deltaX: -dx * WHEEL_GAIN, deltaY: -dy * WHEEL_GAIN, deltaMode: 0
               }));
             }
+            function focusIfEditable(el) {
+              try {
+                if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) el.focus();
+              } catch (e) {}
+            }
             async function press(t) {
               lastTarget = fire('mousedown', t, 0, 1);
               down = true;
               await settle(TAP_GAP);
               fire('mouseup', t, 0, 0);
               fire('click', t, 0, 0);
+              focusIfEditable(target(t));
               down = false; lastTarget = null;
             }
             async function clickAt(t) {
@@ -308,6 +327,7 @@ jobs:
                   await settle(wasMoved ? DROP_GAP : TAP_GAP);
                   fire('mouseup', t, 0, 0);
                   fire('click', t, 0, 0);
+                  focusIfEditable(target(t));
                   down = false; lastTarget = null;
                 } else if (mode === 'scroll') {
                   if (!wasMoved) await clickAt(t);       // ketik biasa = klik
@@ -381,6 +401,7 @@ jobs:
           import android.util.Base64
           import android.view.View
           import android.view.WindowManager
+          import android.view.inputmethod.InputMethodManager
           import android.webkit.JavascriptInterface
           import android.webkit.ValueCallback
           import android.webkit.WebChromeClient
@@ -400,7 +421,26 @@ jobs:
           private const val DESKTOP_UA =
               "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 
-          class Bridge(private val ctx: Context) {
+          class Bridge(private val ctx: Context, private val webGetter: () -> WebView?) {
+              @JavascriptInterface
+              fun showKeyboard() {
+                  Handler(Looper.getMainLooper()).post {
+                      val w = webGetter() ?: return@post
+                      w.requestFocus()
+                      val imm = ctx.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+                      imm.showSoftInput(w, 0)
+                  }
+              }
+
+              @JavascriptInterface
+              fun hideKeyboard() {
+                  Handler(Looper.getMainLooper()).post {
+                      val w = webGetter() ?: return@post
+                      val imm = ctx.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+                      imm.hideSoftInputFromWindow(w.windowToken, 0)
+                  }
+              }
+
               private fun toast(msg: String) =
                   Handler(Looper.getMainLooper()).post { Toast.makeText(ctx, msg, Toast.LENGTH_LONG).show() }
 
@@ -463,7 +503,9 @@ jobs:
                       overScrollMode = View.OVER_SCROLL_NEVER
                       isVerticalScrollBarEnabled = false
                       isHorizontalScrollBarEnabled = false
-                      addJavascriptInterface(Bridge(this@MainActivity), "AndroidBridge")
+                      addJavascriptInterface(Bridge(this@MainActivity) { this@MainActivity.web }, "AndroidBridge")
+                      isFocusable = true
+                      isFocusableInTouchMode = true
                       settings.apply {
                           javaScriptEnabled = true
                           domStorageEnabled = true
