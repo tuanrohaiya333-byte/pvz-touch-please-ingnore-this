@@ -32,8 +32,8 @@ jobs:
                   applicationId = "com.example.pvztouch2"
                   minSdk = 24
                   targetSdk = 34
-                  versionCode = 11
-                  versionName = "1.9.1"
+                  versionCode = 12
+                  versionName = "1.10"
               }
               signingConfigs {
                   create("fixed") {
@@ -101,17 +101,53 @@ jobs:
                 (a.hasAttribute('download') || /^(blob|data):/.test(a.href));
             }
 
-            // papan kekunci: tunjuk bila kotak teks difokus, sembunyi bila tidak
+            // ---- input teks: guna kotak teks asli Android ----
+            let lastEditable = null, suppressUntil = 0;
             function editable(t) {
               return t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable);
             }
+            function findEditable() {
+              if (editable(document.activeElement)) return document.activeElement;
+              if (lastEditable && lastEditable.isConnected) return lastEditable;
+              const list = document.querySelectorAll(
+                'input:not([type=hidden]):not([type=checkbox]):not([type=radio]):not([type=button]):not([type=range]):not([type=file]):not([type=submit]), textarea');
+              for (const el of list) { if (!el.disabled && !el.readOnly) return el; }
+              return null;
+            }
+            window.__openTextPrompt = function () {
+              if (!window.AndroidBridge) return;
+              const el = findEditable();
+              if (!el) { window.AndroidBridge.toastMsg('Tiada kotak teks ditemui'); return; }
+              lastEditable = el;
+              const cur = el.isContentEditable ? (el.textContent || '') : (el.value || '');
+              window.AndroidBridge.promptText(cur);
+            };
+            window.__setEditableText = function (text) {
+              const el = findEditable();
+              suppressUntil = Date.now() + 2500;
+              if (!el) return;
+              try { el.focus(); } catch (e) {}
+              if (el.isContentEditable) {
+                el.textContent = text;
+              } else {
+                const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+                const d = Object.getOwnPropertyDescriptor(proto, 'value');
+                if (d && d.set) d.set.call(el, text); else el.value = text;
+              }
+              el.dispatchEvent(new Event('input', { bubbles: true }));
+              el.dispatchEvent(new Event('change', { bubbles: true }));
+            };
+            window.__textPromptClosed = function () {
+              suppressUntil = Date.now() + 2500;
+              const el = findEditable();
+              if (el && document.activeElement === el) { try { el.blur(); } catch (e) {} }
+            };
             document.addEventListener('focusin', function (e) {
-              if (editable(e.target) && window.AndroidBridge && window.AndroidBridge.showKeyboard) window.AndroidBridge.showKeyboard();
-            }, true);
-            document.addEventListener('focusout', function () {
-              setTimeout(function () {
-                if (!editable(document.activeElement) && window.AndroidBridge && window.AndroidBridge.hideKeyboard) window.AndroidBridge.hideKeyboard();
-              }, 200);
+              if (!editable(e.target)) return;
+              lastEditable = e.target;
+              if (Date.now() < suppressUntil) return;
+              suppressUntil = Date.now() + 1500;
+              window.__openTextPrompt();
             }, true);
 
             const origClick = HTMLAnchorElement.prototype.click;
@@ -377,8 +413,25 @@ jobs:
               render();
               document.body.appendChild(btn);
             }
-            setInterval(ensureButton, 1000);
+            // butang tulis teks (sebelah butang mod)
+            let kbBtn = null;
+            function ensureKbButton() {
+              if (kbBtn && kbBtn.isConnected) return;
+              if (!document.body) return;
+              kbBtn = document.createElement('div');
+              kbBtn.textContent = '\u2328';
+              kbBtn.style.cssText = 'position:fixed;left:34px;bottom:3px;z-index:2147483646;opacity:.55;' +
+                'width:26px;height:26px;border-radius:50%;display:flex;align-items:center;justify-content:center;' +
+                'font:13px sans-serif;color:#fff;background:rgba(0,0,0,.5);border:1px solid rgba(255,255,255,.6);user-select:none;';
+              kbBtn.addEventListener('click', function (e) {
+                e.stopPropagation();
+                if (window.__openTextPrompt) window.__openTextPrompt();
+              });
+              document.body.appendChild(kbBtn);
+            }
+            setInterval(function () { ensureButton(); ensureKbButton(); }, 1000);
             ensureButton();
+            ensureKbButton();
           })();
           EOF_FILE
           mkdir -p app/src/main/java/com/example/pvztouch
@@ -408,9 +461,12 @@ jobs:
           import android.webkit.WebSettings
           import android.webkit.WebView
           import android.webkit.WebViewClient
+          import android.widget.EditText
           import android.widget.Toast
+          import org.json.JSONObject
           import androidx.activity.OnBackPressedCallback
           import androidx.activity.result.contract.ActivityResultContracts
+          import androidx.appcompat.app.AlertDialog
           import androidx.appcompat.app.AppCompatActivity
           import androidx.core.view.WindowCompat
           import androidx.core.view.WindowInsetsCompat
@@ -421,29 +477,19 @@ jobs:
           private const val DESKTOP_UA =
               "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 
-          class Bridge(private val ctx: Context, private val webGetter: () -> WebView?) {
+          class Bridge(
+              private val ctx: Context,
+              private val webGetter: () -> WebView?,
+              private val onPrompt: (String) -> Unit
+          ) {
               @JavascriptInterface
-              fun showKeyboard() {
-                  toast("Papan kekunci diminta")   // sementara, untuk diagnosis
-                  val h = Handler(Looper.getMainLooper())
-                  // cuba beberapa kali kerana WebView perlu sedikit masa sebelum sedia menerima input
-                  for (d in longArrayOf(0, 150, 400, 900)) {
-                      h.postDelayed({
-                          val w = webGetter() ?: return@postDelayed
-                          w.requestFocus()
-                          val imm = ctx.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
-                          imm.showSoftInput(w, 0)
-                      }, d)
-                  }
+              fun promptText(current: String) {
+                  Handler(Looper.getMainLooper()).post { onPrompt(current) }
               }
 
               @JavascriptInterface
-              fun hideKeyboard() {
-                  Handler(Looper.getMainLooper()).post {
-                      val w = webGetter() ?: return@post
-                      val imm = ctx.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
-                      imm.hideSoftInputFromWindow(w.windowToken, 0)
-                  }
+              fun toastMsg(msg: String) {
+                  toast(msg)
               }
 
               private fun toast(msg: String) =
@@ -508,7 +554,10 @@ jobs:
                       overScrollMode = View.OVER_SCROLL_NEVER
                       isVerticalScrollBarEnabled = false
                       isHorizontalScrollBarEnabled = false
-                      addJavascriptInterface(Bridge(this@MainActivity) { this@MainActivity.web }, "AndroidBridge")
+                      addJavascriptInterface(
+                          Bridge(this@MainActivity, { this@MainActivity.web }, { cur -> showTextDialog(cur) }),
+                          "AndroidBridge"
+                      )
                       isFocusable = true
                       isFocusableInTouchMode = true
                       settings.apply {
@@ -564,6 +613,37 @@ jobs:
                           if (web.canGoBack()) web.goBack() else finish()
                       }
                   })
+              }
+
+              private var dialogShowing = false
+
+              // kotak teks asli Android: lebih dipercayai berbanding menunggu papan kekunci WebView
+              private fun showTextDialog(current: String) {
+                  if (dialogShowing) return
+                  dialogShowing = true
+                  val input = EditText(this).apply {
+                      setText(current)
+                      setSelection(text.length)
+                      setSingleLine(true)
+                  }
+                  val dialog = AlertDialog.Builder(this)
+                      .setTitle("Tulis teks")
+                      .setView(input)
+                      .setPositiveButton("OK") { _, _ ->
+                          web.evaluateJavascript(
+                              "window.__setEditableText&&window.__setEditableText(" + JSONObject.quote(input.text.toString()) + ")", null
+                          )
+                      }
+                      .setNegativeButton("Batal", null)
+                      .create()
+                  dialog.setOnDismissListener {
+                      dialogShowing = false
+                      web.evaluateJavascript("window.__textPromptClosed&&window.__textPromptClosed()", null)
+                      immersive()
+                  }
+                  dialog.window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE)
+                  dialog.show()
+                  input.requestFocus()
               }
 
               @Suppress("DEPRECATION")
