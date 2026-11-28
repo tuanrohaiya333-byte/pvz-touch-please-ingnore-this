@@ -32,8 +32,8 @@ jobs:
                   applicationId = "com.example.pvztouch2"
                   minSdk = 24
                   targetSdk = 34
-                  versionCode = 12
-                  versionName = "1.10"
+                  versionCode = 13
+                  versionName = "1.11"
               }
               signingConfigs {
                   create("fixed") {
@@ -122,7 +122,7 @@ jobs:
               const cur = el.isContentEditable ? (el.textContent || '') : (el.value || '');
               window.AndroidBridge.promptText(cur);
             };
-            window.__setEditableText = function (text) {
+            window.__setEditableText = function (text, enter) {
               const el = findEditable();
               suppressUntil = Date.now() + 2500;
               if (!el) return;
@@ -136,6 +136,11 @@ jobs:
               }
               el.dispatchEvent(new Event('input', { bubbles: true }));
               el.dispatchEvent(new Event('change', { bubbles: true }));
+              if (enter) {
+                ['keydown', 'keypress', 'keyup'].forEach(function (k) {
+                  el.dispatchEvent(new KeyboardEvent(k, { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }));
+                });
+              }
             };
             window.__textPromptClosed = function () {
               suppressUntil = Date.now() + 2500;
@@ -261,6 +266,17 @@ jobs:
               const mx = (type === 'mousemove' && prevX !== null) ? t.clientX - prevX : 0;
               const my = (type === 'mousemove' && prevY !== null) ? t.clientY - prevY : 0;
               prevX = t.clientX; prevY = t.clientY;
+              // butang HTML kadang-kadang dengar 'pointer' events, bukan 'mouse' events
+              if (el.tagName !== 'CANVAS' && window.PointerEvent) {
+                const pmap = { mousedown: 'pointerdown', mouseup: 'pointerup', mousemove: 'pointermove' };
+                if (pmap[type]) {
+                  el.dispatchEvent(new PointerEvent(pmap[type], {
+                    bubbles: true, cancelable: true, view: window,
+                    clientX: t.clientX, clientY: t.clientY, screenX: t.screenX, screenY: t.screenY,
+                    button: button, buttons: buttons, pointerId: 1, pointerType: 'mouse', isPrimary: true
+                  }));
+                }
+              }
               el.dispatchEvent(new MouseEvent(type, {
                 bubbles: true, cancelable: true, view: window,
                 clientX: t.clientX, clientY: t.clientY, screenX: t.screenX, screenY: t.screenY,
@@ -276,7 +292,16 @@ jobs:
                 deltaX: -dx * WHEEL_GAIN, deltaY: -dy * WHEEL_GAIN, deltaMode: 0
               }));
             }
+            let lastDiag = 0;
+            function diag(el) {   // sementara: tunjuk elemen HTML yang diketik
+              if (!el || el.tagName === 'CANVAS' || el === btn || el === kbBtn) return;
+              if (Date.now() - lastDiag < 1500) return;
+              lastDiag = Date.now();
+              const cls = (typeof el.className === 'string' && el.className) ? '.' + el.className.split(' ')[0] : '';
+              if (window.AndroidBridge) window.AndroidBridge.toastMsg('Tekan: ' + el.tagName + (el.id ? '#' + el.id : '') + cls);
+            }
             function focusIfEditable(el) {
+              diag(el);
               try {
                 if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) el.focus();
               } catch (e) {}
@@ -632,6 +657,11 @@ jobs:
                       .setPositiveButton("OK") { _, _ ->
                           web.evaluateJavascript(
                               "window.__setEditableText&&window.__setEditableText(" + JSONObject.quote(input.text.toString()) + ")", null
+                          )
+                      }
+                      .setNeutralButton("OK + Enter") { _, _ ->
+                          web.evaluateJavascript(
+                              "window.__setEditableText&&window.__setEditableText(" + JSONObject.quote(input.text.toString()) + ", true)", null
                           )
                       }
                       .setNegativeButton("Batal", null)
