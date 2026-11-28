@@ -32,8 +32,8 @@ jobs:
                   applicationId = "com.example.pvztouch2"
                   minSdk = 24
                   targetSdk = 34
-                  versionCode = 14
-                  versionName = "1.12"
+                  versionCode = 15
+                  versionName = "1.13"
               }
               signingConfigs {
                   create("fixed") {
@@ -85,14 +85,6 @@ jobs:
             if (window.__saveBridge) return;
             window.__saveBridge = true;
 
-            // kotak teks game (HTML) menutup butang di bawahnya; biarkan ketikan menembusinya.
-            // Mengetik medan teks masih berfungsi melalui game, dan butang тМи sebagai sandaran.
-            try {
-              const st = document.createElement('style');
-              st.textContent = '.cocosEditBox{pointer-events:none !important;}';
-              (document.head || document.documentElement).appendChild(st);
-            } catch (e) {}
-
             function send(a) {
               const name = a.download || 'pvz-save.json';
               fetch(a.href).then(r => r.blob()).then(b => {
@@ -108,60 +100,6 @@ jobs:
               return a && a.tagName === 'A' && window.AndroidBridge &&
                 (a.hasAttribute('download') || /^(blob|data):/.test(a.href));
             }
-
-            // ---- input teks: guna kotak teks asli Android ----
-            let lastEditable = null, suppressUntil = 0;
-            function editable(t) {
-              return t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable);
-            }
-            function findEditable() {
-              if (editable(document.activeElement)) return document.activeElement;
-              if (lastEditable && lastEditable.isConnected) return lastEditable;
-              const list = document.querySelectorAll(
-                'input:not([type=hidden]):not([type=checkbox]):not([type=radio]):not([type=button]):not([type=range]):not([type=file]):not([type=submit]), textarea');
-              for (const el of list) { if (!el.disabled && !el.readOnly) return el; }
-              return null;
-            }
-            window.__openTextPrompt = function () {
-              if (!window.AndroidBridge) return;
-              const el = findEditable();
-              if (!el) { window.AndroidBridge.toastMsg('Tiada kotak teks ditemui'); return; }
-              lastEditable = el;
-              const cur = el.isContentEditable ? (el.textContent || '') : (el.value || '');
-              window.AndroidBridge.promptText(cur);
-            };
-            window.__setEditableText = function (text, enter) {
-              const el = findEditable();
-              suppressUntil = Date.now() + 2500;
-              if (!el) return;
-              try { el.focus(); } catch (e) {}
-              if (el.isContentEditable) {
-                el.textContent = text;
-              } else {
-                const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-                const d = Object.getOwnPropertyDescriptor(proto, 'value');
-                if (d && d.set) d.set.call(el, text); else el.value = text;
-              }
-              el.dispatchEvent(new Event('input', { bubbles: true }));
-              el.dispatchEvent(new Event('change', { bubbles: true }));
-              if (enter) {
-                ['keydown', 'keypress', 'keyup'].forEach(function (k) {
-                  el.dispatchEvent(new KeyboardEvent(k, { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }));
-                });
-              }
-            };
-            window.__textPromptClosed = function () {
-              suppressUntil = Date.now() + 2500;
-              const el = findEditable();
-              if (el && document.activeElement === el) { try { el.blur(); } catch (e) {} }
-            };
-            document.addEventListener('focusin', function (e) {
-              if (!editable(e.target)) return;
-              lastEditable = e.target;
-              if (Date.now() < suppressUntil) return;
-              suppressUntil = Date.now() + 1500;
-              window.__openTextPrompt();
-            }, true);
 
             const origClick = HTMLAnchorElement.prototype.click;
             HTMLAnchorElement.prototype.click = function () {
@@ -274,17 +212,6 @@ jobs:
               const mx = (type === 'mousemove' && prevX !== null) ? t.clientX - prevX : 0;
               const my = (type === 'mousemove' && prevY !== null) ? t.clientY - prevY : 0;
               prevX = t.clientX; prevY = t.clientY;
-              // butang HTML kadang-kadang dengar 'pointer' events, bukan 'mouse' events
-              if (el.tagName !== 'CANVAS' && window.PointerEvent) {
-                const pmap = { mousedown: 'pointerdown', mouseup: 'pointerup', mousemove: 'pointermove' };
-                if (pmap[type]) {
-                  el.dispatchEvent(new PointerEvent(pmap[type], {
-                    bubbles: true, cancelable: true, view: window,
-                    clientX: t.clientX, clientY: t.clientY, screenX: t.screenX, screenY: t.screenY,
-                    button: button, buttons: buttons, pointerId: 1, pointerType: 'mouse', isPrimary: true
-                  }));
-                }
-              }
               el.dispatchEvent(new MouseEvent(type, {
                 bubbles: true, cancelable: true, view: window,
                 clientX: t.clientX, clientY: t.clientY, screenX: t.screenX, screenY: t.screenY,
@@ -300,27 +227,12 @@ jobs:
                 deltaX: -dx * WHEEL_GAIN, deltaY: -dy * WHEEL_GAIN, deltaMode: 0
               }));
             }
-            let lastDiag = 0;
-            function diag(el) {   // sementara: tunjuk elemen HTML yang diketik
-              if (!el || el.tagName === 'CANVAS' || el === btn || el === kbBtn) return;
-              if (Date.now() - lastDiag < 1500) return;
-              lastDiag = Date.now();
-              const cls = (typeof el.className === 'string' && el.className) ? '.' + el.className.split(' ')[0] : '';
-              if (window.AndroidBridge) window.AndroidBridge.toastMsg('Tekan: ' + el.tagName + (el.id ? '#' + el.id : '') + cls);
-            }
-            function focusIfEditable(el) {
-              diag(el);
-              try {
-                if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) el.focus();
-              } catch (e) {}
-            }
             async function press(t) {
               lastTarget = fire('mousedown', t, 0, 1);
               down = true;
               await settle(TAP_GAP);
               fire('mouseup', t, 0, 0);
               fire('click', t, 0, 0);
-              focusIfEditable(target(t));
               down = false; lastTarget = null;
             }
             async function clickAt(t) {
@@ -396,8 +308,7 @@ jobs:
                   await settle(wasMoved ? DROP_GAP : TAP_GAP);
                   fire('mouseup', t, 0, 0);
                   fire('click', t, 0, 0);
-                  focusIfEditable(target(t));
-                  down = false; lastTarget = null;
+                      down = false; lastTarget = null;
                 } else if (mode === 'scroll') {
                   if (!wasMoved) await clickAt(t);       // ketik biasa = klik
                 } else {                                 // place: klik kedua di tempat lepas
@@ -421,9 +332,9 @@ jobs:
             // ---- butang tukar mod (tepi kiri, tengah) ----
             let btn = null;
             const LOOK = {
-              normal: ['ЁЯЦ▒я╕П', 'rgba(0,0,0,.5)'],
-              scroll: ['тЖХя╕П', 'rgba(30,110,255,.75)'],
-              place:  ['ЁЯМ▒', 'rgba(30,170,60,.75)']
+              normal: ['🖱️', 'rgba(0,0,0,.5)'],
+              scroll: ['↕️', 'rgba(30,110,255,.75)'],
+              place:  ['🌱', 'rgba(30,170,60,.75)']
             };
             function render() {
               if (!btn) return;
@@ -446,25 +357,8 @@ jobs:
               render();
               document.body.appendChild(btn);
             }
-            // butang tulis teks (sebelah butang mod)
-            let kbBtn = null;
-            function ensureKbButton() {
-              if (kbBtn && kbBtn.isConnected) return;
-              if (!document.body) return;
-              kbBtn = document.createElement('div');
-              kbBtn.textContent = '\u2328';
-              kbBtn.style.cssText = 'position:fixed;left:34px;bottom:3px;z-index:2147483646;opacity:.55;' +
-                'width:26px;height:26px;border-radius:50%;display:flex;align-items:center;justify-content:center;' +
-                'font:13px sans-serif;color:#fff;background:rgba(0,0,0,.5);border:1px solid rgba(255,255,255,.6);user-select:none;';
-              kbBtn.addEventListener('click', function (e) {
-                e.stopPropagation();
-                if (window.__openTextPrompt) window.__openTextPrompt();
-              });
-              document.body.appendChild(kbBtn);
-            }
-            setInterval(function () { ensureButton(); ensureKbButton(); }, 1000);
+            setInterval(ensureButton, 1000);
             ensureButton();
-            ensureKbButton();
           })();
           EOF_FILE
           mkdir -p app/src/main/java/com/example/pvztouch
@@ -487,19 +381,15 @@ jobs:
           import android.util.Base64
           import android.view.View
           import android.view.WindowManager
-          import android.view.inputmethod.InputMethodManager
           import android.webkit.JavascriptInterface
           import android.webkit.ValueCallback
           import android.webkit.WebChromeClient
           import android.webkit.WebSettings
           import android.webkit.WebView
           import android.webkit.WebViewClient
-          import android.widget.EditText
           import android.widget.Toast
-          import org.json.JSONObject
           import androidx.activity.OnBackPressedCallback
           import androidx.activity.result.contract.ActivityResultContracts
-          import androidx.appcompat.app.AlertDialog
           import androidx.appcompat.app.AppCompatActivity
           import androidx.core.view.WindowCompat
           import androidx.core.view.WindowInsetsCompat
@@ -510,21 +400,7 @@ jobs:
           private const val DESKTOP_UA =
               "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 
-          class Bridge(
-              private val ctx: Context,
-              private val webGetter: () -> WebView?,
-              private val onPrompt: (String) -> Unit
-          ) {
-              @JavascriptInterface
-              fun promptText(current: String) {
-                  Handler(Looper.getMainLooper()).post { onPrompt(current) }
-              }
-
-              @JavascriptInterface
-              fun toastMsg(msg: String) {
-                  toast(msg)
-              }
-
+          class Bridge(private val ctx: Context) {
               private fun toast(msg: String) =
                   Handler(Looper.getMainLooper()).post { Toast.makeText(ctx, msg, Toast.LENGTH_LONG).show() }
 
@@ -587,12 +463,7 @@ jobs:
                       overScrollMode = View.OVER_SCROLL_NEVER
                       isVerticalScrollBarEnabled = false
                       isHorizontalScrollBarEnabled = false
-                      addJavascriptInterface(
-                          Bridge(this@MainActivity, { this@MainActivity.web }, { cur -> showTextDialog(cur) }),
-                          "AndroidBridge"
-                      )
-                      isFocusable = true
-                      isFocusableInTouchMode = true
+                      addJavascriptInterface(Bridge(this@MainActivity), "AndroidBridge")
                       settings.apply {
                           javaScriptEnabled = true
                           domStorageEnabled = true
@@ -646,42 +517,6 @@ jobs:
                           if (web.canGoBack()) web.goBack() else finish()
                       }
                   })
-              }
-
-              private var dialogShowing = false
-
-              // kotak teks asli Android: lebih dipercayai berbanding menunggu papan kekunci WebView
-              private fun showTextDialog(current: String) {
-                  if (dialogShowing) return
-                  dialogShowing = true
-                  val input = EditText(this).apply {
-                      setText(current)
-                      setSelection(text.length)
-                      setSingleLine(true)
-                  }
-                  val dialog = AlertDialog.Builder(this)
-                      .setTitle("Tulis teks")
-                      .setView(input)
-                      .setPositiveButton("OK") { _, _ ->
-                          web.evaluateJavascript(
-                              "window.__setEditableText&&window.__setEditableText(" + JSONObject.quote(input.text.toString()) + ")", null
-                          )
-                      }
-                      .setNeutralButton("OK + Enter") { _, _ ->
-                          web.evaluateJavascript(
-                              "window.__setEditableText&&window.__setEditableText(" + JSONObject.quote(input.text.toString()) + ", true)", null
-                          )
-                      }
-                      .setNegativeButton("Batal", null)
-                      .create()
-                  dialog.setOnDismissListener {
-                      dialogShowing = false
-                      web.evaluateJavascript("window.__textPromptClosed&&window.__textPromptClosed()", null)
-                      immersive()
-                  }
-                  dialog.window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE)
-                  dialog.show()
-                  input.requestFocus()
               }
 
               @Suppress("DEPRECATION")
