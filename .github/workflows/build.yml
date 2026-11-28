@@ -32,8 +32,8 @@ jobs:
                   applicationId = "com.example.pvztouch2"
                   minSdk = 24
                   targetSdk = 34
-                  versionCode = 10
-                  versionName = "1.9"
+                  versionCode = 11
+                  versionName = "1.9.1"
               }
               signingConfigs {
                   create("fixed") {
@@ -424,11 +424,16 @@ jobs:
           class Bridge(private val ctx: Context, private val webGetter: () -> WebView?) {
               @JavascriptInterface
               fun showKeyboard() {
-                  Handler(Looper.getMainLooper()).post {
-                      val w = webGetter() ?: return@post
-                      w.requestFocus()
-                      val imm = ctx.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
-                      imm.showSoftInput(w, 0)
+                  toast("Papan kekunci diminta")   // sementara, untuk diagnosis
+                  val h = Handler(Looper.getMainLooper())
+                  // cuba beberapa kali kerana WebView perlu sedikit masa sebelum sedia menerima input
+                  for (d in longArrayOf(0, 150, 400, 900)) {
+                      h.postDelayed({
+                          val w = webGetter() ?: return@postDelayed
+                          w.requestFocus()
+                          val imm = ctx.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+                          imm.showSoftInput(w, 0)
+                      }, d)
                   }
               }
 
