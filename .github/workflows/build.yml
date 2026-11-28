@@ -32,8 +32,8 @@ jobs:
                   applicationId = "com.example.pvztouch2"
                   minSdk = 24
                   targetSdk = 34
-                  versionCode = 13
-                  versionName = "1.11"
+                  versionCode = 14
+                  versionName = "1.12"
               }
               signingConfigs {
                   create("fixed") {
@@ -84,6 +84,14 @@ jobs:
           (function () {
             if (window.__saveBridge) return;
             window.__saveBridge = true;
+
+            // kotak teks game (HTML) menutup butang di bawahnya; biarkan ketikan menembusinya.
+            // Mengetik medan teks masih berfungsi melalui game, dan butang тМи sebagai sandaran.
+            try {
+              const st = document.createElement('style');
+              st.textContent = '.cocosEditBox{pointer-events:none !important;}';
+              (document.head || document.documentElement).appendChild(st);
+            } catch (e) {}
 
             function send(a) {
               const name = a.download || 'pvz-save.json';
@@ -413,9 +421,9 @@ jobs:
             // ---- butang tukar mod (tepi kiri, tengah) ----
             let btn = null;
             const LOOK = {
-              normal: ['🖱️', 'rgba(0,0,0,.5)'],
-              scroll: ['↕️', 'rgba(30,110,255,.75)'],
-              place:  ['🌱', 'rgba(30,170,60,.75)']
+              normal: ['ЁЯЦ▒я╕П', 'rgba(0,0,0,.5)'],
+              scroll: ['тЖХя╕П', 'rgba(30,110,255,.75)'],
+              place:  ['ЁЯМ▒', 'rgba(30,170,60,.75)']
             };
             function render() {
               if (!btn) return;
